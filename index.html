@@ -136,11 +136,49 @@ function findByLabel(lines, labelRe, valueRe){
   return "";
 }
 
+// Email tolerante a erros típicos de OCR (espaços, "(at)", vírgula em vez de ponto, @ perdido…)
+function extractEmail(text){
+  const TLD = "(?:com|pt|net|org|edu|eu|es|fr|de|it|uk|nl|be|ch|br|us|ie|co\\.uk|com\\.br|info|biz)";
+  const clean = s => s.toLowerCase().replace(/^[^a-z0-9]+|[^a-z0-9]+$/g,"");
+  let t = text.replace(/[\u200b\u00a0]/g," ")
+              .replace(/\s*[\(\[\{]\s*at\s*[\)\]\}]\s*/gi,"@")
+              .replace(/\s*@\s*/g,"@")                       // "joao @ gmail" → "joao@gmail"
+              .replace(/[©®＠]/g,"@");
+  // domínio partido: "gmail . com", "gmail, com", "gmail,com"
+  t = t.replace(/@\s*([A-Za-z0-9-]+)\s*[.,;:]\s*([A-Za-z]{2,3}(?:\.[A-Za-z]{2})?)\b/g,"@$1.$2");
+  // parte local partida por espaços junto ao @ ou a pontos: "joao . silva@x.com"
+  t = t.replace(/([A-Za-z0-9])\s*\.\s*([A-Za-z0-9]+@)/g,"$1.$2");
+
+  // 1) padrão normal
+  let m = t.match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)+/);
+  if(m) return clean(m[0]);
+
+  // 2) linha com etiqueta de email
+  for(const line of t.split(/\r?\n/)){
+    if(/e[\s-]?mail|correio/i.test(line)){
+      const v = line.replace(/.*?(e[\s-]?mail|correio[^:]*)\s*[:.\-]?\s*/i,"").replace(/\s+/g,"");
+      const m2 = v.match(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:[.,][A-Za-z0-9\-]+)+/);
+      if(m2) return clean(m2[0].replace(/,/g,"."));
+    }
+  }
+
+  // 3) @ perdido pelo OCR: junta "nome" + fornecedor conhecido + tld
+  const m3 = t.match(new RegExp("([A-Za-z0-9._%+\\-]{2,})\\s*(gmail|hotmail|outlook|yahoo|icloud|sapo|live|msn|proton(?:mail)?|mail)\\s*[.,]\\s*"+TLD+"\\b","i"));
+  if(m3){
+    const dom = m3[0].slice(m3[1].length).replace(/\s+/g,"").replace(",",".");
+    return clean(m3[1] + "@" + dom);
+  }
+
+  // 4) qualquer coisa com @ no meio (mesmo com domínio incompleto) — melhor que em branco
+  const m4 = t.match(/[A-Za-z0-9._%+\-]{2,}@[A-Za-z0-9.\-]{2,}/);
+  return m4 ? clean(m4[0]) : "";
+}
+
 function parse(text){
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const out = {};
 
-  out["Email"] = (text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/)||[""])[0];
+  out["Email"] = extractEmail(text);
 
   // contacto
   let tel = findByLabel(lines, /(telefone|telemovel|telem|contacto|contact|phone|mobile|tlm|tel)\b/, /\+?\d[\d\s().-]{7,}\d/);
@@ -221,9 +259,20 @@ async function runQueue(){
       const th=$("#thumb"); th.src=canvas.toDataURL("image/jpeg",.6); th.hidden=false;
       const w = await getWorker();
       const { data } = await w.recognize(canvas);
-      $("#raw").textContent = data.text;
+      let text = data.text;
+      // Se não achou email, 2.ª leitura em modo "texto solto" (apanha emails isolados/pequenos)
+      if(!extractEmail(text)){
+        try{
+          await w.setParameters({ tessedit_pageseg_mode: "11" });
+          const r2 = await w.recognize(canvas);
+          text += "\n" + r2.data.text;
+        } finally {
+          await w.setParameters({ tessedit_pageseg_mode: "3" });
+        }
+      }
+      $("#raw").textContent = text;
       const i = rows.findIndex(r=>r._id===id);
-      if(i>=0) rows[i] = Object.assign({_id:id}, parse(data.text));
+      if(i>=0) rows[i] = Object.assign({_id:id}, parse(text));
     }catch(err){
       console.error(err);
       errors++;                                // fica a linha em branco
