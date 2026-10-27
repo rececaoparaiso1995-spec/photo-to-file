@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Foto → Excel</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{--bg:#f6f7f9;--card:#fff;--ink:#1c2430;--mut:#6b7686;--acc:#1f6feb;--line:#dfe3e8}
+  @media (prefers-color-scheme:dark){:root{--bg:#12161c;--card:#1b222b;--ink:#e8ecf1;--mut:#93a0b1;--acc:#4c8dff;--line:#2d3745}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,sans-serif;padding:16px;max-width:900px;margin-inline:auto}
+  h1{font-size:1.3rem;margin:0 0 4px}
+  p.sub{color:var(--mut);margin:0 0 16px;font-size:.9rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+  button,label.btn{display:inline-block;background:var(--acc);color:#fff;border:0;border-radius:10px;padding:12px 16px;font-size:1rem;cursor:pointer;margin:4px 6px 4px 0}
+  button.sec{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+  button:disabled{opacity:.5}
+  input[type=file]{display:none}
+  #status{color:var(--mut);font-size:.9rem;min-height:1.3em;margin-top:6px}
+  .scroll{overflow-x:auto}
+  table{border-collapse:collapse;width:100%;min-width:760px}
+  th,td{border:1px solid var(--line);padding:2px}
+  th{font-size:.8rem;color:var(--mut);text-align:left;padding:6px}
+  td input{width:100%;border:0;background:transparent;color:var(--ink);padding:8px 6px;font-size:.95rem}
+  td input:focus{outline:2px solid var(--acc)}
+  td input.empty{background:rgba(255,190,0,.18)}
+  td.x{width:36px;text-align:center}
+  .thumb{max-width:100%;max-height:180px;border-radius:8px;display:block;margin-top:8px}
+  details{margin-top:8px;color:var(--mut);font-size:.85rem}
+  pre{white-space:pre-wrap;font-size:.8rem}
+</style>
+</head>
+<body>
+<h1>Foto → Excel</h1>
+<p class="sub">Tira uma foto ao documento. Os dados são lidos no próprio aparelho (nada é enviado para a internet). Campos a amarelo = em branco, para completar.</p>
+
+<div class="card">
+  <label class="btn">📷 Tirar foto<input id="cam" type="file" accept="image/*" capture="environment"></label>
+  <label class="btn sec">🖼️ Escolher da galeria<input id="gal" type="file" accept="image/*" multiple></label>
+  <div id="status"></div>
+  <img id="thumb" class="thumb" hidden>
+  <details><summary>Texto lido (para diagnóstico)</summary><pre id="raw"></pre></details>
+</div>
+
+<div class="card">
+  <div class="scroll">
+    <table>
+      <thead><tr id="head"></tr></thead>
+      <tbody id="body"></tbody>
+    </table>
+  </div>
+  <div style="margin-top:10px">
+    <button id="add" class="sec">+ Linha em branco</button>
+    <button id="exp">⬇️ Descarregar Excel</button>
+    <button id="clr" class="sec">Limpar tudo</button>
+  </div>
+</div>
+
+<script>
+const COLS = ["Nome","ID / Nº documento","Email","Contacto","Sexo","Nacionalidade","Data da reserva"];
+let rows = [];
+try { rows = JSON.parse(localStorage.getItem("rows")||"[]"); } catch(e){}
+
+const $ = s => document.querySelector(s);
+const status = t => $("#status").textContent = t;
+const save = () => { try{ localStorage.setItem("rows", JSON.stringify(rows)); }catch(e){} };
+
+function render(){
+  $("#head").innerHTML = COLS.map(c=>`<th>${c}</th>`).join("") + "<th></th>";
+  $("#body").innerHTML = rows.map((r,i)=>
+    "<tr>" + COLS.map((c,j)=>`<td><input data-i="${i}" data-c="${c}" value="${(r[c]||"").replace(/"/g,"&quot;")}" class="${r[c]?"":"empty"}"></td>`).join("") +
+    `<td class="x"><button class="sec" style="padding:4px 8px;margin:0" data-del="${i}">✕</button></td></tr>`).join("");
+}
+$("#body").addEventListener("input", e=>{
+  const t=e.target; if(!t.dataset.c) return;
+  rows[t.dataset.i][t.dataset.c]=t.value;
+  t.classList.toggle("empty", !t.value);
+  save();
+});
+$("#body").addEventListener("click", e=>{
+  const d=e.target.dataset.del; if(d===undefined) return;
+  rows.splice(+d,1); save(); render();
+});
+$("#add").onclick = ()=>{ rows.push({}); save(); render(); };
+$("#clr").onclick = ()=>{ if(confirm("Apagar todas as linhas?")){ rows=[]; save(); render(); } };
+$("#exp").onclick = ()=>{
+  if(!rows.length){ alert("Sem dados para exportar."); return; }
+  const data = rows.map(r=>Object.fromEntries(COLS.map(c=>[c,r[c]||""])));
+  const ws = XLSX.utils.json_to_sheet(data, {header:COLS});
+  ws["!cols"] = COLS.map(()=>({wch:24}));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Hóspedes");
+  XLSX.writeFile(wb, "hospedes_" + new Date().toISOString().slice(0,10) + ".xlsx");
+};
+
+// ---------- imagem ----------
+function loadImage(file){
+  return new Promise((res,rej)=>{
+    const img=new Image(); const url=URL.createObjectURL(file);
+    img.onload=()=>{
+      const max=2200, s=Math.min(1, max/Math.max(img.width,img.height));
+      const c=document.createElement("canvas");
+      c.width=Math.round(img.width*s); c.height=Math.round(img.height*s);
+      const x=c.getContext("2d"); x.filter="grayscale(1) contrast(1.25)";
+      x.drawImage(img,0,0,c.width,c.height);
+      URL.revokeObjectURL(url); res(c);
+    };
+    img.onerror=rej; img.src=url;
+  });
+}
+
+// ---------- extração ----------
+const norm = s => s.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+
+function findByLabel(lines, labelRe, valueRe){
+  for(let i=0;i<lines.length;i++){
+    const n = norm(lines[i]);
+    const m = n.match(labelRe);
+    if(!m) continue;
+    // resto da mesma linha (usa posição no texto original, mesmo comprimento após normalização simples)
+    let rest = lines[i].slice(m.index + m[0].length).replace(/^[\s:.\-/|]+/,"").trim();
+    for(const cand of [rest, (lines[i+1]||"").trim()]){
+      if(!cand) continue;
+      const v = valueRe ? (cand.match(valueRe)||[])[0] : cand;
+      if(v) return v.trim();
+    }
+  }
+  return "";
+}
+
+function parse(text){
+  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const out = {};
+
+  out["Email"] = (text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/)||[""])[0];
+
+  // contacto
+  let tel = findByLabel(lines, /(telefone|telemovel|telem|contacto|contact|phone|mobile|tlm|tel)\b/, /\+?\d[\d\s().-]{7,}\d/);
+  if(!tel){
+    const m = text.match(/(\+\d{1,3}[\s.-]?)?\b9[1236]\d[\s.-]?\d{3}[\s.-]?\d{3}\b/) || text.match(/\+\d{1,3}[\d\s.-]{8,}\d/);
+    tel = m ? m[0] : "";
+  }
+  out["Contacto"] = tel.replace(/\s+/g," ").trim();
+
+  // sexo
+  let sx = findByLabel(lines, /\b(sexo|sex|gender|genero)\b/, /\b(M|F|Masculino|Feminino|Male|Female)\b/i);
+  if(sx){ const c=sx[0].toUpperCase(); sx = c==="M"?"M":"F"; }
+  out["Sexo"] = sx;
+
+  // nacionalidade
+  let nat = findByLabel(lines, /\b(nacionalidade|nationality|nacionalid)\b/, /[A-Za-zÀ-ÿ]{3,}(?:\s[A-Za-zÀ-ÿ]{3,})?/);
+  out["Nacionalidade"] = nat;
+
+  // id
+  let id = findByLabel(lines, /(n[ºo°.]?\s*(do\s*)?(documento|cartao|passaporte|bi|cc)|document\s*(no|number|n)|passport\s*(no|number)|doc\.?\s*n|numero\s*(de\s*)?(documento|identificacao)|id\s*(no|number)|nic|nif)/, /\b(?=[A-Z0-9]*\d)[A-Z0-9]{6,12}\b/i);
+  if(!id){
+    const m = text.match(/\b\d{8}\s?\d\s?[A-Z]{2}\d\b/) || text.match(/\b[A-Z]{1,2}\d{6,8}\b/);
+    id = m ? m[0] : "";
+  }
+  out["ID / Nº documento"] = id.replace(/\s+/g,"");
+
+  // nome
+  let nome = findByLabel(lines, /\b(nome\s*proprio|nome\s*completo|nome|given\s*names?|full\s*name|name|hospede|guest)\b/, /[A-Za-zÀ-ÿ'’ -]{3,}/);
+  const ap = findByLabel(lines, /\b(apelido|apelidos|surname|last\s*name)\b/, /[A-Za-zÀ-ÿ'’ -]{2,}/);
+  if(ap && nome && !norm(nome).includes(norm(ap))) nome = nome + " " + ap;
+  else if(ap && !nome) nome = ap;
+  out["Nome"] = nome.replace(/\s+/g," ").trim();
+
+  // data da reserva
+  const dateRe = /\b\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}\b|\b\d{4}[\/.\-]\d{1,2}[\/.\-]\d{1,2}\b/;
+  let dt = findByLabel(lines, /(reserva|booking|check[\s-]?in|arrival|chegada|entrada)/, dateRe);
+  out["Data da reserva"] = dt;
+
+  return out;
+}
+
+// ---------- OCR ----------
+let worker = null;
+async function getWorker(){
+  if(!worker){
+    status("A carregar o leitor de texto (1.ª vez demora um pouco)…");
+    worker = await Tesseract.createWorker(["por","eng"], 1, {
+      logger: m => { if(m.status==="recognizing text") status("A ler… " + Math.round(m.progress*100) + "%"); }
+    });
+  }
+  return worker;
+}
+
+async function handleFiles(files){
+  for(const f of files){
+    try{
+      status("A preparar imagem…");
+      const canvas = await loadImage(f);
+      const th=$("#thumb"); th.src=canvas.toDataURL("image/jpeg",.6); th.hidden=false;
+      const w = await getWorker();
+      const { data } = await w.recognize(canvas);
+      $("#raw").textContent = data.text;
+      const r = parse(data.text);
+      rows.push(r); save(); render();
+      const got = COLS.filter(c=>r[c]).length;
+      status(`Pronto: ${got}/${COLS.length} campos encontrados. Confirma e completa os amarelos.`);
+    }catch(err){
+      console.error(err);
+      status("Erro a ler a foto: " + (err.message||err) + ". Verifica a ligação à internet (necessária na 1.ª vez para carregar o leitor).");
+    }
+  }
+}
+$("#cam").onchange = e => { handleFiles([...e.target.files]); e.target.value=""; };
+$("#gal").onchange = e => { handleFiles([...e.target.files]); e.target.value=""; };
+
+render();
+</script>
+</body>
+</html>
