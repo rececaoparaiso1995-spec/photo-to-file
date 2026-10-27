@@ -182,30 +182,52 @@ async function getWorker(){
   if(!worker){
     status("A carregar o leitor de texto (1.ª vez demora um pouco)…");
     worker = await Tesseract.createWorker(["por","eng"], 1, {
-      logger: m => { if(m.status==="recognizing text") status("A ler… " + Math.round(m.progress*100) + "%"); }
+      logger: m => { if(m.status==="recognizing text"){ pct = Math.round(m.progress*100); queueStatus(); } }
     });
   }
   return worker;
 }
 
-async function handleFiles(files){
-  for(const f of files){
+// ---------- fila: tira fotos enquanto as anteriores processam ----------
+let queue = [], busy = false, total = 0, done = 0, errors = 0, pct = 0;
+
+function queueStatus(){
+  const waiting = queue.length;
+  if(busy){
+    status(`A ler foto ${done+1} de ${total}` + (pct ? ` (${pct}%)` : "") +
+           (waiting ? ` · ${waiting} na fila` : "") + " — podes tirar mais fotos.");
+  }
+}
+
+async function runQueue(){
+  busy = true;
+  while(queue.length){
+    const f = queue.shift();
+    pct = 0; queueStatus();
     try{
-      status("A preparar imagem…");
       const canvas = await loadImage(f);
       const th=$("#thumb"); th.src=canvas.toDataURL("image/jpeg",.6); th.hidden=false;
       const w = await getWorker();
       const { data } = await w.recognize(canvas);
       $("#raw").textContent = data.text;
-      const r = parse(data.text);
-      rows.push(r); save(); render();
-      const got = COLS.filter(c=>r[c]).length;
-      status(`Pronto: ${got}/${COLS.length} campos encontrados. Confirma e completa os amarelos.`);
+      rows.push(parse(data.text)); save(); render();
     }catch(err){
       console.error(err);
-      status("Erro a ler a foto: " + (err.message||err) + ". Verifica a ligação à internet (necessária na 1.ª vez para carregar o leitor).");
+      errors++;
+      rows.push({}); save(); render();   // linha em branco para não perder a posição
     }
+    done++;
   }
+  busy = false;
+  status(`Pronto: ${done} foto(s) lidas` + (errors ? `, ${errors} com erro (linha em branco)` : "") +
+         ". Confirma e completa os campos a amarelo.");
+  total = done = errors = 0;
+}
+
+function handleFiles(files){
+  for(const f of files){ queue.push(f); total++; }
+  queueStatus();
+  if(!busy) runQueue();
 }
 $("#cam").onchange = e => { handleFiles([...e.target.files]); e.target.value=""; };
 $("#gal").onchange = e => { handleFiles([...e.target.files]); e.target.value=""; };
