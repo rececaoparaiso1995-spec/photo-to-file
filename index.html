@@ -71,8 +71,11 @@ function render(){
   $("#head").innerHTML = COLS.map(c=>`<th>${c}</th>`).join("") + "<th></th>";
   $("#body").innerHTML = rows.map((r,i)=>
     "<tr>" + COLS.map((c,j)=>`<td><input data-i="${i}" data-c="${c}" value="${(r[c]||"").replace(/"/g,"&quot;")}" class="${r[c]?"":"empty"}"></td>`).join("") +
-    `<td class="x"><button class="sec" style="padding:4px 8px;margin:0" data-del="${i}">✕</button></td></tr>`).join("");
+    `<td class="x" style="width:84px;white-space:nowrap">` +
+      (images.has(r._id) ? `<button class="sec" title="Rodar foto e reler" style="padding:4px 8px;margin:0 4px 0 0" data-rot="${r._id}">↻</button>` : "") +
+      `<button class="sec" style="padding:4px 8px;margin:0" data-del="${i}">✕</button></td></tr>`).join("");
 }
+const images = new Map();   // fotos em memória (só nesta sessão) para poder rodar e reler
 $("#body").addEventListener("input", e=>{
   const t=e.target; if(!t.dataset.c) return;
   rows[t.dataset.i][t.dataset.c]=t.value;
@@ -80,11 +83,14 @@ $("#body").addEventListener("input", e=>{
   save();
 });
 $("#body").addEventListener("click", e=>{
+  const rot=e.target.dataset.rot;
+  if(rot){ rotate(rot); return; }
   const d=e.target.dataset.del; if(d===undefined) return;
+  images.delete(rows[+d]._id);
   rows.splice(+d,1); save(); render();
 });
 $("#add").onclick = ()=>{ rows.push({}); save(); render(); };
-$("#clr").onclick = ()=>{ if(confirm("Apagar todas as linhas?")){ rows=[]; save(); render(); } };
+$("#clr").onclick = ()=>{ if(confirm("Apagar todas as linhas?")){ rows=[]; images.clear(); save(); render(); } };
 $("#exp").onclick = ()=>{
   if(!rows.length){ alert("Sem dados para exportar."); return; }
   const data = rows.map(r=>Object.fromEntries(COLS.map(c=>[c,r[c]||""])));
@@ -202,20 +208,27 @@ function queueStatus(){
 async function runQueue(){
   busy = true;
   while(queue.length){
-    const f = queue.shift();
+    const job = queue.shift();
     pct = 0; queueStatus();
+    let id = job.id, canvas = job.canvas;
+    if(!id){                                   // foto nova: reserva a linha já (mantém a ordem)
+      id = "r" + Date.now() + Math.random().toString(36).slice(2,6);
+      rows.push({_id:id});
+    }
     try{
-      const canvas = await loadImage(f);
+      if(!canvas) canvas = await loadImage(job.file);
+      images.set(id, canvas);
       const th=$("#thumb"); th.src=canvas.toDataURL("image/jpeg",.6); th.hidden=false;
       const w = await getWorker();
       const { data } = await w.recognize(canvas);
       $("#raw").textContent = data.text;
-      rows.push(parse(data.text)); save(); render();
+      const i = rows.findIndex(r=>r._id===id);
+      if(i>=0) rows[i] = Object.assign({_id:id}, parse(data.text));
     }catch(err){
       console.error(err);
-      errors++;
-      rows.push({}); save(); render();   // linha em branco para não perder a posição
+      errors++;                                // fica a linha em branco
     }
+    save(); render();
     done++;
   }
   busy = false;
@@ -224,8 +237,20 @@ async function runQueue(){
   total = done = errors = 0;
 }
 
+function rotate(id){
+  const c = images.get(id); if(!c) return;
+  const n = document.createElement("canvas");
+  n.width = c.height; n.height = c.width;
+  const x = n.getContext("2d");
+  x.translate(n.width, 0); x.rotate(Math.PI/2); x.drawImage(c, 0, 0);
+  images.set(id, n);
+  queue.push({canvas:n, id}); total++;
+  queueStatus();
+  if(!busy) runQueue();
+}
+
 function handleFiles(files){
-  for(const f of files){ queue.push(f); total++; }
+  for(const f of files){ queue.push({file:f}); total++; }
   queueStatus();
   if(!busy) runQueue();
 }
